@@ -11,7 +11,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "build": "npm run build:vercel",
-    "build:vercel": "esbuild api/handler.ts --bundle --platform=node --target=node20 --outfile=api/index.js --format=esm --packages=external",
+    "build:vercel": "esbuild api/handler.ts --bundle --platform=node --target=node20 --outfile=api/index.js --format=esm",
     "build:local": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit"
   },
