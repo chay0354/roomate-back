@@ -9,10 +9,8 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "build": "tsc --noEmit",
     "start": "tsx src/index.ts",
-    "build": "npm run build:vercel",
-    "build:vercel": "esbuild api/handler.ts --bundle --platform=node --target=node20 --outfile=api/index.js --format=esm",
-    "build:local": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,12 +18,11 @@
     "@supabase/server": "^1.4.0",
     "@supabase/supabase-js": "^2.110.7",
     "dotenv": "^17.4.2",
-    "hono": "^4.12.30"
+    "hono": "^4.12.30",
+    "tsx": "^4.23.1"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "esbuild": "^0.25.0",
-    "tsx": "^4.23.1",
     "typescript": "~5.7.3"
   }
 }

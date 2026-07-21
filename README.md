@@ -1,15 +1,15 @@
 # RooMate API
 
-Hono REST API for the RooMate mobile app. All client traffic goes through this backend to Supabase Postgres.
+Standard **Node.js** REST API for the RooMate mobile app (Hono + Supabase).
 
 ```
-Mobile  →  RooMate API  →  Supabase
+Mobile  →  RooMate API  →  Supabase Postgres
 ```
 
 ## Local development
 
 ```powershell
-cp .env.example .env
+copy .env.example .env
 # Set SUPABASE_SECRET_KEY in .env
 npm install
 npm run dev
@@ -17,12 +17,16 @@ npm run dev
 
 Health check: `http://localhost:8787/health`
 
-## Deploy to Vercel
+Production:
 
-1. Push this repo to GitHub.
-2. Import the project in [Vercel](https://vercel.com/new).
-3. Vercel runs `npm run build:vercel` to bundle the app, then deploys `api/index.ts`.
-4. Add environment variables (Production + Preview):
+```powershell
+npm install
+npm start
+```
+
+On Render/Railway, set **Start Command** to `npm start` (no separate build step required).
+
+## Environment variables
 
 | Variable | Description |
 |----------|-------------|
@@ -30,13 +34,20 @@ Health check: `http://localhost:8787/health`
 | `SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_...` |
 | `SUPABASE_SECRET_KEY` | `sb_secret_...` |
 | `SUPABASE_JWKS_URL` | `https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json` |
+| `PORT` | Server port (default `8787`; platforms like Render set this automatically) |
 
-5. Deploy. All routes are served from the single serverless function via `vercel.json` rewrites.
+## Deploy (Node.js host)
 
-After deploy, set the mobile app env:
+Works on any Node 20+ host that runs `npm install` and `npm start`:
+
+- [Render](https://render.com) — Web Service, start `npm start`
+- [Railway](https://railway.app) — detects Node, uses `Procfile`
+- [Fly.io](https://fly.io), VPS, etc.
+
+After deploy, set in the mobile app:
 
 ```
-EXPO_PUBLIC_API_URL=https://your-project.vercel.app
+EXPO_PUBLIC_API_URL=https://your-api-host.com
 ```
 
 ## API routes

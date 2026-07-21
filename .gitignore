@@ -5,5 +5,3 @@ dist/
 .vercel
 *.log
 .DS_Store
-api/_bundle.mjs
-dist/
