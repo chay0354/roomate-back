@@ -6,5 +6,4 @@ dist/
 *.log
 .DS_Store
 api/_bundle.mjs
-api/index.js
 dist/
