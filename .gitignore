@@ -5,4 +5,4 @@ dist/
 .vercel
 *.log
 .DS_Store
-api/*.js
+api/index.js

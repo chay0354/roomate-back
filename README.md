@@ -21,7 +21,7 @@ Health check: `http://localhost:8787/health`
 
 1. Push this repo to GitHub.
 2. Import the project in [Vercel](https://vercel.com/new).
-3. Vercel auto-detects the `api/` serverless function — **no build step is required** (`vercel.json` sets `buildCommand` to empty).
+3. Vercel runs `npm run build:vercel` (esbuild bundle) then deploys `api/index.js`.
 4. Add environment variables (Production + Preview):
 
 | Variable | Description |
