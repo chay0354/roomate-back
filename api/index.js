@@ -25821,8 +25821,8 @@ function createApp() {
 }
 var app = createApp();
 
-// src/vercel.ts
-var vercel_default = { fetch: handle(app) };
+// build/entry.ts
+var entry_default = { fetch: handle(app) };
 export {
-  vercel_default as default
+  entry_default as default
 };
