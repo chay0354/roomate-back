@@ -21,7 +21,7 @@ Health check: `http://localhost:8787/health`
 
 1. Push this repo to GitHub.
 2. Import the project in [Vercel](https://vercel.com/new).
-3. Set **Root Directory** to `.` (repo root).
+3. Vercel auto-detects the `api/` serverless function — **no build step is required** (`vercel.json` sets `buildCommand` to empty).
 4. Add environment variables (Production + Preview):
 
 | Variable | Description |
