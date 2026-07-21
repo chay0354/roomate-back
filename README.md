@@ -21,7 +21,7 @@ Health check: `http://localhost:8787/health`
 
 1. Push this repo to GitHub.
 2. Import the project in [Vercel](https://vercel.com/new).
-3. Vercel deploys `api/index.ts` as a Node.js serverless function (with `src/**` included).
+3. Vercel runs `npm run build:vercel` to bundle the app, then deploys `api/index.ts`.
 4. Add environment variables (Production + Preview):
 
 | Variable | Description |
