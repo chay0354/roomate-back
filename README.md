@@ -1,12 +1,12 @@
 # RooMate API
 
-Standard **Node.js** REST API for the RooMate mobile app (Hono + Supabase).
+Hono REST API for the RooMate mobile app. All client traffic goes through this backend to Supabase Postgres.
 
 ```
 Mobile  →  RooMate API  →  Supabase Postgres
 ```
 
-## Local development
+## Local development (Node.js server)
 
 ```powershell
 copy .env.example .env
@@ -17,38 +17,36 @@ npm run dev
 
 Health check: `http://localhost:8787/health`
 
-Production:
+## Deploy to Vercel
 
-```powershell
-npm install
-npm start
+1. Import [github.com/chay0354/roomate-back](https://github.com/chay0354/roomate-back) on [Vercel](https://vercel.com/new).
+2. Vercel runs `npm run build` → bundles `api/handler.ts` into `api/index.js`.
+3. Add these **Environment Variables** in the Vercel project settings:
+
+| Variable | Value |
+|----------|-------|
+| `SUPABASE_URL` | `https://admauaereitgjwunyuta.supabase.co` |
+| `SUPABASE_PUBLISHABLE_KEY` | your `sb_publishable_...` key |
+| `SUPABASE_SECRET_KEY` | your `sb_secret_...` key |
+| `SUPABASE_JWKS_URL` | `https://admauaereitgjwunyuta.supabase.co/auth/v1/.well-known/jwks.json` |
+
+4. Deploy. Test: `https://your-project.vercel.app/health`
+
+Set in the mobile app:
+
 ```
-
-On Render/Railway, set **Start Command** to `npm start` (no separate build step required).
+EXPO_PUBLIC_API_URL=https://roomate-back.vercel.app
+```
 
 ## Environment variables
 
 | Variable | Description |
 |----------|-------------|
-| `SUPABASE_URL` | `https://<project-ref>.supabase.co` |
-| `SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_...` |
-| `SUPABASE_SECRET_KEY` | `sb_secret_...` |
-| `SUPABASE_JWKS_URL` | `https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json` |
-| `PORT` | Server port (default `8787`; platforms like Render set this automatically) |
-
-## Deploy (Node.js host)
-
-Works on any Node 20+ host that runs `npm install` and `npm start`:
-
-- [Render](https://render.com) — Web Service, start `npm start`
-- [Railway](https://railway.app) — detects Node, uses `Procfile`
-- [Fly.io](https://fly.io), VPS, etc.
-
-After deploy, set in the mobile app:
-
-```
-EXPO_PUBLIC_API_URL=https://your-api-host.com
-```
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_PUBLISHABLE_KEY` | Publishable API key |
+| `SUPABASE_SECRET_KEY` | Secret key (required for auth) |
+| `SUPABASE_JWKS_URL` | JWKS URL for JWT verification |
+| `PORT` | Local dev port (default `8787`) |
 
 ## API routes
 
