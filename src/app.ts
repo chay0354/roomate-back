@@ -22,6 +22,14 @@ export function createApp() {
     })
   );
 
+  app.get('/', (c) =>
+    c.json({
+      ok: true,
+      service: 'roomate-api',
+      docs: '/health',
+    })
+  );
+
   app.get('/health', (c) =>
     c.json({
       ok: true,

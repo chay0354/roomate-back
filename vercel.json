@@ -2,5 +2,10 @@
   "version": 2,
   "buildCommand": "npm run build:vercel",
   "installCommand": "npm install",
-  "rewrites": [{ "source": "/(.*)", "destination": "/api" }]
+  "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 30
+    }
+  }
 }
