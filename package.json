@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "RooMate REST API — Hono + Supabase",
   "private": true,
+  "type": "module",
   "engines": {
     "node": ">=20"
   },

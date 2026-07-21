@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { withSupabase } from '@supabase/server/adapters/hono';
 
-import { badRequest, ok } from '../lib/errors.js';
-import { getAnonClient } from '../lib/supabase-anon.js';
+import { badRequest, ok } from '../lib/errors';
+import { getAnonClient } from '../lib/supabase-anon';
 
 export const authRoutes = new Hono();
 

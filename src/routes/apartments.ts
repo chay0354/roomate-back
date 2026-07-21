@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { withSupabase } from '@supabase/server/adapters/hono';
 
-import { badRequest, notFound, ok } from '../lib/errors.js';
-import { getAnonClient } from '../lib/supabase-anon.js';
+import { badRequest, notFound, ok } from '../lib/errors';
+import { getAnonClient } from '../lib/supabase-anon';
 
 export const apartmentRoutes = new Hono();
 

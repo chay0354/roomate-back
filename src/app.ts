@@ -1,14 +1,14 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 
-import { applicationRoutes } from './routes/applications.js';
-import { apartmentRoutes } from './routes/apartments.js';
-import { authRoutes } from './routes/auth.js';
-import { conversationRoutes } from './routes/conversations.js';
-import { favoriteRoutes } from './routes/favorites.js';
-import { meetingRoutes } from './routes/meetings.js';
-import { notificationRoutes } from './routes/notifications.js';
-import { profileRoutes } from './routes/profiles.js';
+import { applicationRoutes } from './routes/applications';
+import { apartmentRoutes } from './routes/apartments';
+import { authRoutes } from './routes/auth';
+import { conversationRoutes } from './routes/conversations';
+import { favoriteRoutes } from './routes/favorites';
+import { meetingRoutes } from './routes/meetings';
+import { notificationRoutes } from './routes/notifications';
+import { profileRoutes } from './routes/profiles';
 
 export function createApp() {
   const app = new Hono();

@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { withSupabase } from '@supabase/server/adapters/hono';
 
-import { badRequest, ok } from '../lib/errors.js';
-import { getSupabaseContext } from '../lib/hono-context.js';
+import { badRequest, ok } from '../lib/errors';
+import { getSupabaseContext } from '../lib/hono-context';
 
 export const profileRoutes = new Hono();
 
