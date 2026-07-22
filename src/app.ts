@@ -6,9 +6,11 @@ import { apartmentRoutes } from './routes/apartments';
 import { authRoutes } from './routes/auth';
 import { conversationRoutes } from './routes/conversations';
 import { favoriteRoutes } from './routes/favorites';
+import { friendRoutes } from './routes/friends';
 import { meetingRoutes } from './routes/meetings';
 import { notificationRoutes } from './routes/notifications';
 import { profileRoutes } from './routes/profiles';
+import { reelRoutes } from './routes/reels';
 
 export function createApp() {
   const app = new Hono();
@@ -45,6 +47,8 @@ export function createApp() {
   app.route('/conversations', conversationRoutes);
   app.route('/meetings', meetingRoutes);
   app.route('/notifications', notificationRoutes);
+  app.route('/friends', friendRoutes);
+  app.route('/reels', reelRoutes);
   app.route('/me/profile', profileRoutes);
 
   return app;

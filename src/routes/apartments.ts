@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { withSupabase } from '@supabase/server/adapters/hono';
 
 import { badRequest, notFound, ok } from '../lib/errors';
+import { getSupabaseContext } from '../lib/hono-context';
 import { getAnonClient } from '../lib/supabase-anon';
 
 export const apartmentRoutes = new Hono();
@@ -29,6 +30,19 @@ apartmentRoutes.get('/', async (c) => {
   const { data, error } = await query;
   if (error) return badRequest(c, error.message);
   return ok(c, data);
+});
+
+/** Apartments owned by the current user (for apartment-tour reels, etc.). */
+apartmentRoutes.get('/mine', withSupabase({ auth: 'user' }), async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const { data, error } = await supabase
+    .from('apartments')
+    .select(apartmentSelect)
+    .eq('owner_id', userClaims!.id)
+    .order('created_at', { ascending: false });
+
+  if (error) return badRequest(c, error.message);
+  return ok(c, data ?? []);
 });
 
 apartmentRoutes.get('/:id', async (c) => {

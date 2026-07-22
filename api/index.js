@@ -25505,6 +25505,11 @@ applicationRoutes.post("/:id/reject", withSupabase({ auth: "user" }), async (c) 
   return ok(c, { ok: true });
 });
 
+// src/lib/hono-context.ts
+function getSupabaseContext(c) {
+  return c.var.supabaseContext;
+}
+
 // src/lib/supabase-anon.ts
 var anonClient = null;
 function getAnonClient() {
@@ -25537,6 +25542,12 @@ apartmentRoutes.get("/", async (c) => {
   if (error) return badRequest(c, error.message);
   return ok(c, data);
 });
+apartmentRoutes.get("/mine", withSupabase({ auth: "user" }), async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const { data, error } = await supabase.from("apartments").select(apartmentSelect).eq("owner_id", userClaims.id).order("created_at", { ascending: false });
+  if (error) return badRequest(c, error.message);
+  return ok(c, data ?? []);
+});
 apartmentRoutes.get("/:id", async (c) => {
   const id = c.req.param("id");
   const supabase = getAnonClient();
@@ -25557,6 +25568,22 @@ apartmentRoutes.post("/", withSupabase({ auth: "user" }), async (c) => {
   return ok(c, data);
 });
 
+// src/lib/supabase-service.ts
+var serviceClient = null;
+function getServiceClient() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SECRET_KEY;
+  if (!url || !key || key.includes("your_secret") || key.includes("here")) {
+    return null;
+  }
+  if (!serviceClient) {
+    serviceClient = createClient(url, key, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    });
+  }
+  return serviceClient;
+}
+
 // src/routes/auth.ts
 var authRoutes = new Hono2();
 authRoutes.post("/signup", async (c) => {
@@ -25564,18 +25591,45 @@ authRoutes.post("/signup", async (c) => {
   if (!body.email || !body.password || body.password.length < 6) {
     return badRequest(c, "Email and password (min 6 chars) are required");
   }
+  const email = body.email.trim();
+  const meta = {
+    full_name: body.full_name?.trim(),
+    username: body.username?.trim(),
+    phone: body.phone?.trim(),
+    user_path: body.user_path ?? "dayer"
+  };
+  const service = getServiceClient();
+  if (service) {
+    const { data: created, error: createError } = await service.auth.admin.createUser({
+      email,
+      password: body.password,
+      email_confirm: true,
+      user_metadata: meta
+    });
+    if (createError) {
+      return badRequest(c, createError.message);
+    }
+    const anon = getAnonClient();
+    const { data: data2, error: error2 } = await anon.auth.signInWithPassword({
+      email,
+      password: body.password
+    });
+    if (error2) {
+      return ok(c, {
+        session: null,
+        user: created.user
+      });
+    }
+    return ok(c, {
+      session: data2.session,
+      user: data2.user ?? created.user
+    });
+  }
   const supabase = getAnonClient();
   const { data, error } = await supabase.auth.signUp({
-    email: body.email.trim(),
+    email,
     password: body.password,
-    options: {
-      data: {
-        full_name: body.full_name?.trim(),
-        username: body.username?.trim(),
-        phone: body.phone?.trim(),
-        user_path: body.user_path ?? "dayer"
-      }
-    }
+    options: { data: meta }
   });
   if (error) return badRequest(c, error.message);
   return ok(c, {
@@ -25620,11 +25674,6 @@ authRoutes.post("/signout", withSupabase({ auth: "user" }), async (c) => {
   if (error) return badRequest(c, error.message);
   return ok(c, { ok: true });
 });
-
-// src/lib/hono-context.ts
-function getSupabaseContext(c) {
-  return c.var.supabaseContext;
-}
 
 // src/routes/conversations.ts
 var conversationRoutes = new Hono2();
@@ -25713,6 +25762,67 @@ favoriteRoutes.post("/:apartmentId", async (c) => {
   return ok(c, { ok: true });
 });
 
+// src/routes/friends.ts
+var friendRoutes = new Hono2();
+friendRoutes.use("*", withSupabase({ auth: "user" }));
+friendRoutes.get("/", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const me = userClaims.id;
+  const { data, error } = await supabase.from("friendships").select(
+    "requester_id, addressee_id, status, created_at, requester:profiles!friendships_requester_id_fkey(*), addressee:profiles!friendships_addressee_id_fkey(*)"
+  ).eq("status", "accepted").or(`requester_id.eq.${me},addressee_id.eq.${me}`);
+  if (error) return badRequest(c, error.message);
+  const friends = (data ?? []).map((row) => {
+    const profile = row.requester_id === me ? row.addressee : row.requester;
+    return {
+      friendship: { requester_id: row.requester_id, addressee_id: row.addressee_id, status: row.status },
+      profile
+    };
+  });
+  return ok(c, friends);
+});
+friendRoutes.get("/suggestions", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const me = userClaims.id;
+  const { data: existing, error: e1 } = await supabase.from("friendships").select("requester_id, addressee_id").or(`requester_id.eq.${me},addressee_id.eq.${me}`);
+  if (e1) return badRequest(c, e1.message);
+  const exclude = /* @__PURE__ */ new Set([me]);
+  for (const row of existing ?? []) {
+    exclude.add(row.requester_id);
+    exclude.add(row.addressee_id);
+  }
+  const { data: profiles, error } = await supabase.from("profiles").select("*").neq("id", me).order("created_at", { ascending: false }).limit(40);
+  if (error) return badRequest(c, error.message);
+  const suggestions = (profiles ?? []).filter((p) => !exclude.has(p.id));
+  return ok(c, suggestions);
+});
+friendRoutes.get("/apartments", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const me = userClaims.id;
+  const { data: friendships, error: e1 } = await supabase.from("friendships").select("requester_id, addressee_id").eq("status", "accepted").or(`requester_id.eq.${me},addressee_id.eq.${me}`);
+  if (e1) return badRequest(c, e1.message);
+  const friendIds = (friendships ?? []).map(
+    (row) => row.requester_id === me ? row.addressee_id : row.requester_id
+  );
+  if (!friendIds.length) return ok(c, []);
+  const { data, error } = await supabase.from("apartments").select("*, owner:profiles!apartments_owner_id_fkey(*)").in("owner_id", friendIds).eq("status", "open").order("created_at", { ascending: false });
+  if (error) return badRequest(c, error.message);
+  return ok(c, data ?? []);
+});
+friendRoutes.post("/request", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const body = await c.req.json();
+  if (!body.user_id) return badRequest(c, "user_id is required");
+  if (body.user_id === userClaims.id) return badRequest(c, "cannot friend yourself");
+  const { data, error } = await supabase.from("friendships").insert({
+    requester_id: userClaims.id,
+    addressee_id: body.user_id,
+    status: "accepted"
+  }).select("*").single();
+  if (error) return badRequest(c, error.message);
+  return ok(c, data);
+});
+
 // src/routes/meetings.ts
 var meetingRoutes = new Hono2();
 meetingRoutes.use("*", withSupabase({ auth: "user" }));
@@ -25782,6 +25892,131 @@ profileRoutes.patch("/", async (c) => {
   return ok(c, data);
 });
 
+// src/routes/reels.ts
+var reelRoutes = new Hono2();
+var reelSelect = "*, author:profiles!reels_user_id_fkey(*), apartment:apartments(*, owner:profiles!apartments_owner_id_fkey(*))";
+reelRoutes.get("/", async (c) => {
+  const supabase = getAnonClient();
+  const { data, error } = await supabase.from("reels").select(reelSelect).order("created_at", { ascending: false }).limit(50);
+  if (error) return badRequest(c, error.message);
+  return ok(c, data ?? []);
+});
+reelRoutes.get("/me/liked-ids", withSupabase({ auth: "user" }), async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const { data, error } = await supabase.from("reel_likes").select("reel_id").eq("user_id", userClaims.id);
+  if (error) return badRequest(c, error.message);
+  return ok(
+    c,
+    (data ?? []).map((r) => r.reel_id)
+  );
+});
+reelRoutes.get("/:id/comments", async (c) => {
+  const supabase = getAnonClient();
+  const id = c.req.param("id");
+  const { data, error } = await supabase.from("reel_comments").select("*, author:profiles!reel_comments_user_id_fkey(*)").eq("reel_id", id).order("created_at", { ascending: true }).limit(100);
+  if (error) return badRequest(c, error.message);
+  return ok(c, data ?? []);
+});
+reelRoutes.post("/", withSupabase({ auth: "user" }), async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const userId = userClaims.id;
+  const contentType = c.req.header("content-type") ?? "";
+  let kind;
+  let caption = null;
+  let apartmentId = null;
+  let mediaUrl;
+  let thumbnailUrl = null;
+  if (contentType.includes("multipart/form-data")) {
+    const form = await c.req.parseBody();
+    kind = String(form.kind ?? "");
+    caption = form.caption ? String(form.caption) : null;
+    apartmentId = form.apartment_id ? String(form.apartment_id) : null;
+    const file = form.file;
+    if (!file || typeof file === "string") {
+      return badRequest(c, "file is required");
+    }
+    const blob = file;
+    const ext = blob.name?.split(".").pop()?.toLowerCase() || (kind === "image" ? "jpg" : "mp4");
+    const path = `${userId}/${crypto.randomUUID()}.${ext}`;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const { error: upErr } = await supabase.storage.from("reels").upload(path, bytes, {
+      contentType: blob.type || (kind === "image" ? "image/jpeg" : "video/mp4"),
+      upsert: false
+    });
+    if (upErr) return badRequest(c, upErr.message);
+    const { data: pub } = supabase.storage.from("reels").getPublicUrl(path);
+    mediaUrl = pub.publicUrl;
+    if (kind === "image") thumbnailUrl = mediaUrl;
+  } else {
+    const body = await c.req.json();
+    kind = body.kind;
+    mediaUrl = body.media_url;
+    thumbnailUrl = body.thumbnail_url ?? null;
+    caption = body.caption ?? null;
+    apartmentId = body.apartment_id ?? null;
+  }
+  if (!kind || !["image", "video", "apartment_tour"].includes(kind)) {
+    return badRequest(c, "kind must be image, video, or apartment_tour");
+  }
+  if (!mediaUrl) return badRequest(c, "media_url is required");
+  if (kind === "apartment_tour" && !apartmentId) {
+    return badRequest(c, "apartment_id is required for apartment_tour");
+  }
+  if (apartmentId) {
+    const { data: apt, error: aptErr } = await supabase.from("apartments").select("id, owner_id").eq("id", apartmentId).single();
+    if (aptErr || !apt) return badRequest(c, "apartment not found");
+    if (apt.owner_id !== userId) {
+      return badRequest(c, "you can only link apartments you own");
+    }
+  }
+  const { data, error } = await supabase.from("reels").insert({
+    user_id: userId,
+    kind,
+    media_url: mediaUrl,
+    thumbnail_url: thumbnailUrl,
+    caption,
+    apartment_id: apartmentId
+  }).select(reelSelect).single();
+  if (error) return badRequest(c, error.message);
+  return ok(c, data);
+});
+reelRoutes.post("/:id/like", withSupabase({ auth: "user" }), async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const reelId = c.req.param("id");
+  const body = await c.req.json().catch(() => ({ liked: true }));
+  if (body.liked === false) {
+    const { error } = await supabase.from("reel_likes").delete().eq("reel_id", reelId).eq("user_id", userClaims.id);
+    if (error) return badRequest(c, error.message);
+  } else {
+    const { error } = await supabase.from("reel_likes").upsert({
+      reel_id: reelId,
+      user_id: userClaims.id
+    });
+    if (error) return badRequest(c, error.message);
+  }
+  const { data } = await supabase.from("reels").select("likes_count").eq("id", reelId).single();
+  return ok(c, { liked: body.liked !== false, likes_count: data?.likes_count ?? 0 });
+});
+reelRoutes.post("/:id/comments", withSupabase({ auth: "user" }), async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const reelId = c.req.param("id");
+  const body = await c.req.json();
+  if (!body.body?.trim()) return badRequest(c, "body is required");
+  const { data, error } = await supabase.from("reel_comments").insert({
+    reel_id: reelId,
+    user_id: userClaims.id,
+    body: body.body.trim()
+  }).select("*, author:profiles!reel_comments_user_id_fkey(*)").single();
+  if (error) return badRequest(c, error.message);
+  return ok(c, data);
+});
+reelRoutes.get("/:id", async (c) => {
+  const supabase = getAnonClient();
+  const { data, error } = await supabase.from("reels").select(reelSelect).eq("id", c.req.param("id")).single();
+  if (error) return notFound(c, error.message);
+  return ok(c, data);
+});
+
 // src/app.ts
 function createApp() {
   const app2 = new Hono2();
@@ -25816,6 +26051,8 @@ function createApp() {
   app2.route("/conversations", conversationRoutes);
   app2.route("/meetings", meetingRoutes);
   app2.route("/notifications", notificationRoutes);
+  app2.route("/friends", friendRoutes);
+  app2.route("/reels", reelRoutes);
   app2.route("/me/profile", profileRoutes);
   return app2;
 }
