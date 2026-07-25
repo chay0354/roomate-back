@@ -24,7 +24,9 @@ conversationRoutes.get('/', async (c) => {
 
   const { data, error } = await supabase
     .from('conversations')
-    .select('*, apartment:apartments(*), conversation_members(user_id, profile:profiles(*))')
+    .select(
+      '*, apartment:apartments(*, owner:profiles!apartments_owner_id_fkey(*)), conversation_members(user_id, profile:profiles(*))'
+    )
     .in('id', convIds)
     .order('created_at', { ascending: false });
 
@@ -34,9 +36,15 @@ conversationRoutes.get('/', async (c) => {
 
   const results = await Promise.all(
     conversations.map(async (conv: any) => {
-      const otherMember = conv.conversation_members?.find(
+      const otherFromMembers = conv.conversation_members?.find(
         (m: { user_id: string }) => m.user_id !== userId
-      );
+      )?.profile;
+
+      // Fallback: show apartment owner when the other member row isn't loaded yet
+      const owner = conv.apartment?.owner ?? null;
+      const otherMember =
+        otherFromMembers ??
+        (owner && owner.id !== userId ? owner : null);
 
       const { data: lastMsg } = await supabase
         .from('messages')
@@ -48,7 +56,7 @@ conversationRoutes.get('/', async (c) => {
 
       return {
         ...conv,
-        other_member: otherMember?.profile ?? null,
+        other_member: otherMember,
         last_message: lastMsg ?? null,
       };
     })
@@ -96,4 +104,39 @@ conversationRoutes.post('/:id/messages', async (c) => {
 
   if (error) return badRequest(c, error.message);
   return ok(c, data);
+});
+
+conversationRoutes.get('/:id', async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const userId = userClaims!.id;
+  const conversationId = c.req.param('id');
+
+  const { data: membership } = await supabase
+    .from('conversation_members')
+    .select('conversation_id')
+    .eq('conversation_id', conversationId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (!membership) return badRequest(c, 'not a conversation member');
+
+  const { data: conv, error } = await supabase
+    .from('conversations')
+    .select(
+      '*, apartment:apartments(*, owner:profiles!apartments_owner_id_fkey(*)), conversation_members(user_id, profile:profiles(*))'
+    )
+    .eq('id', conversationId)
+    .single();
+
+  if (error || !conv) return badRequest(c, error?.message ?? 'conversation not found');
+
+  const otherFromMembers = (conv as any).conversation_members?.find(
+    (m: { user_id: string }) => m.user_id !== userId
+  )?.profile;
+  const owner = (conv as any).apartment?.owner ?? null;
+
+  return ok(c, {
+    ...conv,
+    other_member: otherFromMembers ?? (owner && owner.id !== userId ? owner : null),
+  });
 });

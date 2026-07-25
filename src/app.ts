@@ -10,6 +10,7 @@ import { friendRoutes } from './routes/friends';
 import { meetingRoutes } from './routes/meetings';
 import { notificationRoutes } from './routes/notifications';
 import { profileRoutes } from './routes/profiles';
+import { publicProfileRoutes } from './routes/public-profiles';
 import { reelRoutes } from './routes/reels';
 
 export function createApp() {
@@ -50,6 +51,7 @@ export function createApp() {
   app.route('/friends', friendRoutes);
   app.route('/reels', reelRoutes);
   app.route('/me/profile', profileRoutes);
+  app.route('/profiles', publicProfileRoutes);
 
   return app;
 }

@@ -40,12 +40,22 @@ reelRoutes.get('/:id/comments', async (c) => {
   const id = c.req.param('id');
   const { data, error } = await supabase
     .from('reel_comments')
-    .select('*, author:profiles!reel_comments_user_id_fkey(*)')
+    .select('*, author:profiles!user_id(*)')
     .eq('reel_id', id)
     .order('created_at', { ascending: true })
     .limit(100);
 
-  if (error) return badRequest(c, error.message);
+  if (error) {
+    // Fallback if FK hint name differs across environments
+    const retry = await supabase
+      .from('reel_comments')
+      .select('*, author:profiles(*)')
+      .eq('reel_id', id)
+      .order('created_at', { ascending: true })
+      .limit(100);
+    if (retry.error) return badRequest(c, error.message);
+    return ok(c, retry.data ?? []);
+  }
   return ok(c, data ?? []);
 });
 
@@ -108,6 +118,18 @@ reelRoutes.post('/', withSupabase({ auth: 'user' }), async (c) => {
   if (!mediaUrl) return badRequest(c, 'media_url is required');
   if (kind === 'apartment_tour' && !apartmentId) {
     return badRequest(c, 'apartment_id is required for apartment_tour');
+  }
+
+  // Apartment tours are only for landlords (dira), not seekers (dayer)
+  if (kind === 'apartment_tour') {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('user_path')
+      .eq('id', userId)
+      .single();
+    if (profile?.user_path !== 'dira') {
+      return badRequest(c, 'only apartment owners can upload apartment tours');
+    }
   }
 
   // Tours (and any linked apartment) must belong to the uploader
@@ -177,7 +199,7 @@ reelRoutes.post('/:id/comments', withSupabase({ auth: 'user' }), async (c) => {
       user_id: userClaims!.id,
       body: body.body.trim(),
     })
-    .select('*, author:profiles!reel_comments_user_id_fkey(*)')
+    .select('*, author:profiles!user_id(*)')
     .single();
 
   if (error) return badRequest(c, error.message);
