@@ -25458,19 +25458,115 @@ function ok(c, data) {
   return c.json({ data });
 }
 
+// src/lib/supabase-service.ts
+var serviceClient = null;
+function getServiceClient() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SECRET_KEY;
+  if (!url || !key || key.includes("your_secret") || key.includes("here")) {
+    return null;
+  }
+  if (!serviceClient) {
+    serviceClient = createClient(url, key, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    });
+  }
+  return serviceClient;
+}
+
 // src/routes/applications.ts
 var applicationRoutes = new Hono2();
+async function openChatForApplication(supabase, userId, apartmentId, message2) {
+  const msg = message2?.trim() || "\u05D4\u05D9\u05D9! \u05E0\u05E8\u05D0\u05D4 \u05DC\u05D9 \u05E9\u05D6\u05D5 \u05D3\u05D9\u05E8\u05D4 \u05E9\u05DE\u05EA\u05D0\u05D9\u05DE\u05D4 \u05DC\u05D9. \u05D0\u05E9\u05DE\u05D7 \u05DC\u05D3\u05D1\u05E8 \u{1F642}";
+  const { data: apt, error: aptErr } = await supabase.from("apartments").select("id, owner_id").eq("id", apartmentId).single();
+  if (aptErr || !apt) throw new Error(aptErr?.message ?? "apartment not found");
+  if (apt.owner_id === userId) throw new Error("cannot apply to your own apartment");
+  const { data: existingApp } = await supabase.from("applications").select("*").eq("apartment_id", apartmentId).eq("applicant_id", userId).maybeSingle();
+  let applicationId;
+  if (existingApp) {
+    applicationId = existingApp.id;
+    await supabase.from("applications").update({
+      message: msg,
+      updated_at: (/* @__PURE__ */ new Date()).toISOString(),
+      status: existingApp.status === "rejected" ? "pending" : existingApp.status
+    }).eq("id", applicationId);
+  } else {
+    const { data: app2, error: appErr } = await supabase.from("applications").insert({
+      apartment_id: apartmentId,
+      applicant_id: userId,
+      message: msg,
+      status: "pending"
+    }).select("id").single();
+    if (appErr || !app2) throw new Error(appErr?.message ?? "failed to create application");
+    applicationId = app2.id;
+  }
+  const { data: existingConv } = await supabase.from("conversations").select("id").eq("application_id", applicationId).maybeSingle();
+  let conversationId = existingConv?.id;
+  if (!conversationId) {
+    const { data: conv, error: convErr } = await supabase.from("conversations").insert({ apartment_id: apartmentId, application_id: applicationId }).select("id").single();
+    if (convErr || !conv) throw new Error(convErr?.message ?? "failed to create conversation");
+    conversationId = conv.id;
+  }
+  const addMember = async (memberId, required) => {
+    const { error: memErr } = await supabase.from("conversation_members").insert({
+      conversation_id: conversationId,
+      user_id: memberId
+    });
+    if (!memErr) return;
+    const msgLower = String(memErr.message).toLowerCase();
+    if (msgLower.includes("duplicate") || msgLower.includes("unique")) return;
+    if (required) throw new Error(memErr.message);
+  };
+  await addMember(userId, true);
+  await addMember(apt.owner_id, false);
+  const { count } = await supabase.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", conversationId);
+  if (!count) {
+    const { error: msgErr } = await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      sender_id: userId,
+      body: msg
+    });
+    if (msgErr) throw new Error(msgErr.message);
+  }
+  await supabase.from("notifications").insert({
+    user_id: apt.owner_id,
+    type: "application_received",
+    title: "\u05E4\u05E0\u05D9\u05D9\u05D4 \u05D7\u05D3\u05E9\u05D4 \u05DC\u05D3\u05D9\u05E8\u05D4",
+    body: "\u05DE\u05D9\u05E9\u05D4\u05D5 \u05E9\u05DC\u05D7 \u05E4\u05E0\u05D9\u05D9\u05D4 \u05D5\u05E4\u05EA\u05D7 \u05E6\u05F3\u05D0\u05D8",
+    data: {
+      application_id: applicationId,
+      conversation_id: conversationId,
+      apartment_id: apartmentId
+    }
+  });
+  return conversationId;
+}
 applicationRoutes.post("/", withSupabase({ auth: "user" }), async (c) => {
   const { supabase, userClaims } = c.var.supabaseContext;
   const body = await c.req.json();
+  const userId = userClaims.id;
   if (!body.apartment_id) return badRequest(c, "apartment_id is required");
-  const { data, error } = await supabase.from("applications").insert({
-    apartment_id: body.apartment_id,
-    applicant_id: userClaims.id,
-    message: body.message ?? null
-  }).select("*").single();
-  if (error) return badRequest(c, error.message);
-  return ok(c, data);
+  const { data: rpcId, error: rpcErr } = await supabase.rpc("apply_and_open_chat", {
+    p_apartment_id: body.apartment_id,
+    p_message: body.message ?? null
+  });
+  if (!rpcErr && rpcId) {
+    return ok(c, { conversation_id: rpcId });
+  }
+  const service = getServiceClient();
+  const client = service ?? supabase;
+  try {
+    const conversationId = await openChatForApplication(
+      client,
+      userId,
+      body.apartment_id,
+      body.message ?? null
+    );
+    return ok(c, { conversation_id: conversationId });
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : "failed to open chat";
+    return badRequest(c, detail);
+  }
 });
 applicationRoutes.get("/mine", withSupabase({ auth: "user" }), async (c) => {
   const { supabase, userClaims } = c.var.supabaseContext;
@@ -25567,22 +25663,6 @@ apartmentRoutes.post("/", withSupabase({ auth: "user" }), async (c) => {
   if (error) return badRequest(c, error.message);
   return ok(c, data);
 });
-
-// src/lib/supabase-service.ts
-var serviceClient = null;
-function getServiceClient() {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SECRET_KEY;
-  if (!url || !key || key.includes("your_secret") || key.includes("here")) {
-    return null;
-  }
-  if (!serviceClient) {
-    serviceClient = createClient(url, key, {
-      auth: { autoRefreshToken: false, persistSession: false }
-    });
-  }
-  return serviceClient;
-}
 
 // src/routes/auth.ts
 var authRoutes = new Hono2();
@@ -25685,18 +25765,22 @@ conversationRoutes.get("/", async (c) => {
   if (memberErr) return badRequest(c, memberErr.message);
   const convIds = (memberRows ?? []).map((r) => r.conversation_id);
   if (convIds.length === 0) return ok(c, []);
-  const { data, error } = await supabase.from("conversations").select("*, apartment:apartments(*), conversation_members(user_id, profile:profiles(*))").in("id", convIds).order("created_at", { ascending: false });
+  const { data, error } = await supabase.from("conversations").select(
+    "*, apartment:apartments(*, owner:profiles!apartments_owner_id_fkey(*)), conversation_members(user_id, profile:profiles(*))"
+  ).in("id", convIds).order("created_at", { ascending: false });
   if (error) return badRequest(c, error.message);
   const conversations = data ?? [];
   const results = await Promise.all(
     conversations.map(async (conv) => {
-      const otherMember = conv.conversation_members?.find(
+      const otherFromMembers = conv.conversation_members?.find(
         (m) => m.user_id !== userId
-      );
+      )?.profile;
+      const owner = conv.apartment?.owner ?? null;
+      const otherMember = otherFromMembers ?? (owner && owner.id !== userId ? owner : null);
       const { data: lastMsg } = await supabase.from("messages").select("*").eq("conversation_id", conv.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
       return {
         ...conv,
-        other_member: otherMember?.profile ?? null,
+        other_member: otherMember,
         last_message: lastMsg ?? null
       };
     })
@@ -25727,6 +25811,25 @@ conversationRoutes.post("/:id/messages", async (c) => {
   }).select("*").single();
   if (error) return badRequest(c, error.message);
   return ok(c, data);
+});
+conversationRoutes.get("/:id", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const userId = userClaims.id;
+  const conversationId = c.req.param("id");
+  const { data: membership } = await supabase.from("conversation_members").select("conversation_id").eq("conversation_id", conversationId).eq("user_id", userId).maybeSingle();
+  if (!membership) return badRequest(c, "not a conversation member");
+  const { data: conv, error } = await supabase.from("conversations").select(
+    "*, apartment:apartments(*, owner:profiles!apartments_owner_id_fkey(*)), conversation_members(user_id, profile:profiles(*))"
+  ).eq("id", conversationId).single();
+  if (error || !conv) return badRequest(c, error?.message ?? "conversation not found");
+  const otherFromMembers = conv.conversation_members?.find(
+    (m) => m.user_id !== userId
+  )?.profile;
+  const owner = conv.apartment?.owner ?? null;
+  return ok(c, {
+    ...conv,
+    other_member: otherFromMembers ?? (owner && owner.id !== userId ? owner : null)
+  });
 });
 
 // src/routes/favorites.ts
@@ -25765,31 +25868,80 @@ favoriteRoutes.post("/:apartmentId", async (c) => {
 // src/routes/friends.ts
 var friendRoutes = new Hono2();
 friendRoutes.use("*", withSupabase({ auth: "user" }));
+var friendshipSelect = "requester_id, addressee_id, status, created_at, requester:profiles!friendships_requester_id_fkey(*), addressee:profiles!friendships_addressee_id_fkey(*)";
+async function findPair(supabase, me, other) {
+  const { data, error } = await supabase.from("friendships").select("*").or(
+    `and(requester_id.eq.${me},addressee_id.eq.${other}),and(requester_id.eq.${other},addressee_id.eq.${me})`
+  ).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data;
+}
+function friendshipStatus(me, row) {
+  if (!row) return "none";
+  if (row.status === "accepted") return "friends";
+  if (row.status === "declined") return "declined";
+  if (row.status === "pending") {
+    return row.requester_id === me ? "pending_out" : "pending_in";
+  }
+  return "none";
+}
 friendRoutes.get("/", async (c) => {
   const { supabase, userClaims } = getSupabaseContext(c);
   const me = userClaims.id;
-  const { data, error } = await supabase.from("friendships").select(
-    "requester_id, addressee_id, status, created_at, requester:profiles!friendships_requester_id_fkey(*), addressee:profiles!friendships_addressee_id_fkey(*)"
-  ).eq("status", "accepted").or(`requester_id.eq.${me},addressee_id.eq.${me}`);
+  const { data, error } = await supabase.from("friendships").select(friendshipSelect).eq("status", "accepted").or(`requester_id.eq.${me},addressee_id.eq.${me}`);
   if (error) return badRequest(c, error.message);
   const friends = (data ?? []).map((row) => {
     const profile = row.requester_id === me ? row.addressee : row.requester;
     return {
-      friendship: { requester_id: row.requester_id, addressee_id: row.addressee_id, status: row.status },
+      friendship: {
+        requester_id: row.requester_id,
+        addressee_id: row.addressee_id,
+        status: row.status
+      },
       profile
     };
   });
   return ok(c, friends);
 });
+friendRoutes.get("/pending", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const me = userClaims.id;
+  const { data, error } = await supabase.from("friendships").select(friendshipSelect).eq("status", "pending").eq("addressee_id", me).order("created_at", { ascending: false });
+  if (error) return badRequest(c, error.message);
+  const pending = (data ?? []).map((row) => ({
+    friendship: {
+      requester_id: row.requester_id,
+      addressee_id: row.addressee_id,
+      status: row.status
+    },
+    profile: row.requester
+  }));
+  return ok(c, pending);
+});
+friendRoutes.get("/status/:userId", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const me = userClaims.id;
+  const other = c.req.param("userId");
+  if (!other) return badRequest(c, "userId is required");
+  if (other === me) return ok(c, { status: "self" });
+  try {
+    const row = await findPair(supabase, me, other);
+    return ok(c, { status: friendshipStatus(me, row) });
+  } catch (e) {
+    return badRequest(c, e instanceof Error ? e.message : "status failed");
+  }
+});
 friendRoutes.get("/suggestions", async (c) => {
   const { supabase, userClaims } = getSupabaseContext(c);
   const me = userClaims.id;
-  const { data: existing, error: e1 } = await supabase.from("friendships").select("requester_id, addressee_id").or(`requester_id.eq.${me},addressee_id.eq.${me}`);
+  const { data: existing, error: e1 } = await supabase.from("friendships").select("requester_id, addressee_id, status").or(`requester_id.eq.${me},addressee_id.eq.${me}`);
   if (e1) return badRequest(c, e1.message);
   const exclude = /* @__PURE__ */ new Set([me]);
   for (const row of existing ?? []) {
-    exclude.add(row.requester_id);
-    exclude.add(row.addressee_id);
+    if (row.status === "accepted" || row.status === "pending") {
+      exclude.add(row.requester_id);
+      exclude.add(row.addressee_id);
+    }
   }
   const { data: profiles, error } = await supabase.from("profiles").select("*").neq("id", me).order("created_at", { ascending: false }).limit(40);
   if (error) return badRequest(c, error.message);
@@ -25811,14 +25963,68 @@ friendRoutes.get("/apartments", async (c) => {
 });
 friendRoutes.post("/request", async (c) => {
   const { supabase, userClaims } = getSupabaseContext(c);
+  const me = userClaims.id;
   const body = await c.req.json();
   if (!body.user_id) return badRequest(c, "user_id is required");
-  if (body.user_id === userClaims.id) return badRequest(c, "cannot friend yourself");
-  const { data, error } = await supabase.from("friendships").insert({
-    requester_id: userClaims.id,
-    addressee_id: body.user_id,
-    status: "accepted"
-  }).select("*").single();
+  if (body.user_id === me) return badRequest(c, "cannot friend yourself");
+  try {
+    const existing = await findPair(supabase, me, body.user_id);
+    if (existing?.status === "accepted") {
+      return badRequest(c, "\u05DB\u05D1\u05E8 \u05D7\u05D1\u05E8\u05D9\u05DD");
+    }
+    if (existing?.status === "pending") {
+      if (existing.requester_id === me) {
+        return badRequest(c, "\u05D1\u05E7\u05E9\u05EA \u05D7\u05D1\u05E8\u05D5\u05EA \u05DB\u05D1\u05E8 \u05E0\u05E9\u05DC\u05D7\u05D4");
+      }
+      const { data: data2, error: error2 } = await supabase.from("friendships").update({ status: "accepted" }).eq("requester_id", existing.requester_id).eq("addressee_id", existing.addressee_id).select("*").single();
+      if (error2) return badRequest(c, error2.message);
+      return ok(c, data2);
+    }
+    if (existing?.status === "declined") {
+      if (existing.requester_id === me) {
+        const { data: data2, error: error2 } = await supabase.from("friendships").update({ status: "pending" }).eq("requester_id", me).eq("addressee_id", body.user_id).select("*").single();
+        if (error2) return badRequest(c, error2.message);
+        return ok(c, data2);
+      }
+      const { error: delErr } = await supabase.from("friendships").delete().eq("requester_id", existing.requester_id).eq("addressee_id", existing.addressee_id);
+      if (delErr) {
+        const { data: data2, error: error2 } = await supabase.from("friendships").update({ status: "pending" }).eq("requester_id", existing.requester_id).eq("addressee_id", existing.addressee_id).select("*").single();
+        if (error2) return badRequest(c, error2.message);
+        return ok(c, data2);
+      }
+    }
+    const { data, error } = await supabase.from("friendships").insert({
+      requester_id: me,
+      addressee_id: body.user_id,
+      status: "pending"
+    }).select("*").single();
+    if (error) return badRequest(c, error.message);
+    return ok(c, data);
+  } catch (e) {
+    return badRequest(c, e instanceof Error ? e.message : "request failed");
+  }
+});
+friendRoutes.post("/respond", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const me = userClaims.id;
+  const body = await c.req.json();
+  if (!body.user_id) return badRequest(c, "user_id is required");
+  if (body.action !== "accept" && body.action !== "decline") {
+    return badRequest(c, "action must be accept or decline");
+  }
+  const { data: row, error: findErr } = await supabase.from("friendships").select("*").eq("requester_id", body.user_id).eq("addressee_id", me).eq("status", "pending").maybeSingle();
+  if (findErr) return badRequest(c, findErr.message);
+  if (!row) return badRequest(c, "\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D4 \u05D1\u05E7\u05E9\u05EA \u05D7\u05D1\u05E8\u05D5\u05EA \u05DE\u05DE\u05EA\u05D9\u05E0\u05D4");
+  if (body.action === "decline") {
+    const { error: error2 } = await supabase.from("friendships").delete().eq("requester_id", body.user_id).eq("addressee_id", me);
+    if (error2) {
+      const { data: data2, error: uErr } = await supabase.from("friendships").update({ status: "declined" }).eq("requester_id", body.user_id).eq("addressee_id", me).select("*").single();
+      if (uErr) return badRequest(c, uErr.message);
+      return ok(c, data2);
+    }
+    return ok(c, { ok: true, status: "declined" });
+  }
+  const { data, error } = await supabase.from("friendships").update({ status: "accepted" }).eq("requester_id", body.user_id).eq("addressee_id", me).select("*").single();
   if (error) return badRequest(c, error.message);
   return ok(c, data);
 });
@@ -25826,26 +26032,107 @@ friendRoutes.post("/request", async (c) => {
 // src/routes/meetings.ts
 var meetingRoutes = new Hono2();
 meetingRoutes.use("*", withSupabase({ auth: "user" }));
+var meetingSelect = "*, apartment:apartments(*), organizer:profiles!meetings_organizer_id_fkey(*), with_user:profiles!meetings_with_user_id_fkey(*)";
 meetingRoutes.get("/", async (c) => {
   const { supabase, userClaims } = getSupabaseContext(c);
   const userId = userClaims.id;
-  const { data, error } = await supabase.from("meetings").select(
-    "*, apartment:apartments(*), organizer:profiles!meetings_organizer_id_fkey(*), with_user:profiles!meetings_with_user_id_fkey(*)"
-  ).or(`organizer_id.eq.${userId},with_user_id.eq.${userId}`).order("starts_at", { ascending: true });
+  const conversationId = c.req.query("conversation_id");
+  let query = supabase.from("meetings").select(meetingSelect).or(`organizer_id.eq.${userId},with_user_id.eq.${userId}`).order("starts_at", { ascending: true });
+  if (conversationId) {
+    query = query.eq("conversation_id", conversationId);
+  }
+  const { data, error } = await query;
   if (error) return badRequest(c, error.message);
   return ok(c, data);
 });
 meetingRoutes.post("/", async (c) => {
   const { supabase, userClaims } = getSupabaseContext(c);
+  const userId = userClaims.id;
   const body = await c.req.json();
+  if (!body.apartment_id || !body.with_user_id || !body.starts_at) {
+    return badRequest(c, "apartment_id, with_user_id and starts_at are required");
+  }
+  if (body.with_user_id === userId) {
+    return badRequest(c, "cannot schedule a meeting with yourself");
+  }
+  const starts = new Date(body.starts_at);
+  if (Number.isNaN(starts.getTime()) || starts.getTime() < Date.now() - 6e4) {
+    return badRequest(c, "starts_at must be a valid future time");
+  }
   const { data, error } = await supabase.from("meetings").insert({
     apartment_id: body.apartment_id,
-    organizer_id: userClaims.id,
+    organizer_id: userId,
     with_user_id: body.with_user_id,
     starts_at: body.starts_at,
-    notes: body.notes ?? null
-  }).select("*").single();
+    notes: body.notes ?? null,
+    conversation_id: body.conversation_id ?? null,
+    status: "proposed",
+    organizer_accepted: true,
+    invitee_accepted: false
+  }).select(meetingSelect).single();
   if (error) return badRequest(c, error.message);
+  await supabase.from("notifications").insert({
+    user_id: body.with_user_id,
+    type: "meeting_proposed",
+    title: "\u05D4\u05E6\u05E2\u05EA \u05E4\u05D2\u05D9\u05E9\u05D4 \u05D7\u05D3\u05E9\u05D4",
+    body: "\u05DE\u05D9\u05E9\u05D4\u05D5 \u05D4\u05E6\u05D9\u05E2 \u05E4\u05D2\u05D9\u05E9\u05D4 \u2014 \u05D0\u05E9\u05E8/\u05D9 \u05D0\u05D5 \u05D3\u05D7\u05D4/\u05D9",
+    data: {
+      meeting_id: data.id,
+      conversation_id: body.conversation_id ?? null,
+      apartment_id: body.apartment_id
+    }
+  });
+  return ok(c, data);
+});
+meetingRoutes.post("/:id/respond", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const userId = userClaims.id;
+  const id = c.req.param("id");
+  const body = await c.req.json().catch(() => ({ accepted: false }));
+  const { data: meeting, error: fetchErr } = await supabase.from("meetings").select("*").eq("id", id).single();
+  if (fetchErr || !meeting) return badRequest(c, fetchErr?.message ?? "meeting not found");
+  if (meeting.status !== "proposed") {
+    return badRequest(c, "meeting is not waiting for a response");
+  }
+  const isOrganizer = meeting.organizer_id === userId;
+  const isInvitee = meeting.with_user_id === userId;
+  if (!isOrganizer && !isInvitee) return badRequest(c, "not a participant");
+  if (!body.accepted) {
+    const { data: data2, error: error2 } = await supabase.from("meetings").update({
+      status: "declined",
+      organizer_accepted: isOrganizer ? false : meeting.organizer_accepted,
+      invitee_accepted: isInvitee ? false : meeting.invitee_accepted
+    }).eq("id", id).select(meetingSelect).single();
+    if (error2) return badRequest(c, error2.message);
+    const notifyId = isOrganizer ? meeting.with_user_id : meeting.organizer_id;
+    await supabase.from("notifications").insert({
+      user_id: notifyId,
+      type: "meeting_declined",
+      title: "\u05D4\u05E4\u05D2\u05D9\u05E9\u05D4 \u05E0\u05D3\u05D7\u05EA\u05D4",
+      body: "\u05D4\u05E6\u05D3 \u05D4\u05E9\u05E0\u05D9 \u05D3\u05D7\u05D4 \u05D0\u05EA \u05D4\u05E6\u05E2\u05EA \u05D4\u05E4\u05D2\u05D9\u05E9\u05D4",
+      data: { meeting_id: id, conversation_id: meeting.conversation_id }
+    });
+    return ok(c, data2);
+  }
+  const organizer_accepted = isOrganizer ? true : meeting.organizer_accepted;
+  const invitee_accepted = isInvitee ? true : meeting.invitee_accepted;
+  const bothAccepted = organizer_accepted && invitee_accepted;
+  const { data, error } = await supabase.from("meetings").update({
+    organizer_accepted,
+    invitee_accepted,
+    status: bothAccepted ? "scheduled" : "proposed"
+  }).eq("id", id).select(meetingSelect).single();
+  if (error) return badRequest(c, error.message);
+  if (bothAccepted) {
+    const notifyId = isOrganizer ? meeting.with_user_id : meeting.organizer_id;
+    await supabase.from("notifications").insert({
+      user_id: notifyId,
+      type: "meeting_confirmed",
+      title: "\u05D4\u05E4\u05D2\u05D9\u05E9\u05D4 \u05D0\u05D5\u05E9\u05E8\u05D4!",
+      body: "\u05E9\u05E0\u05D9 \u05D4\u05E6\u05D3\u05D3\u05D9\u05DD \u05D0\u05D9\u05E9\u05E8\u05D5 \u2014 \u05D4\u05E4\u05D2\u05D9\u05E9\u05D4 \u05D1\u05D9\u05D5\u05DE\u05DF",
+      data: { meeting_id: id, conversation_id: meeting.conversation_id }
+    });
+  }
   return ok(c, data);
 });
 
@@ -25887,9 +26174,111 @@ profileRoutes.patch("/", async (c) => {
   delete patch.id;
   delete patch.created_at;
   delete patch.updated_at;
+  delete patch.email;
+  delete patch.user_path;
+  const allowed = /* @__PURE__ */ new Set([
+    "username",
+    "full_name",
+    "phone",
+    "bio",
+    "age",
+    "occupation",
+    "marital_status",
+    "hobbies",
+    "avatar_url",
+    "socials"
+  ]);
+  for (const key of Object.keys(patch)) {
+    if (!allowed.has(key)) delete patch[key];
+  }
   const { data, error } = await supabase.from("profiles").update(patch).eq("id", userClaims.id).select("*").single();
   if (error) return badRequest(c, error.message);
   return ok(c, data);
+});
+var AVATAR_EXT = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/heic": "heic",
+  "image/heif": "heif"
+};
+function avatarFileType(file) {
+  const raw2 = (file.type || "").toLowerCase().split(";")[0].trim();
+  const aliases = {
+    "image/jpg": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+    "image/jfif": "image/jpeg"
+  };
+  let contentType = aliases[raw2] ?? raw2;
+  if (!AVATAR_EXT[contentType]) {
+    const fromName = file.name?.split(".").pop()?.toLowerCase() ?? "";
+    const byExt = {
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      webp: "image/webp",
+      heic: "image/heic",
+      heif: "image/heif"
+    };
+    contentType = byExt[fromName] ?? "";
+  }
+  const ext = AVATAR_EXT[contentType];
+  if (!ext) return null;
+  return { contentType, ext };
+}
+profileRoutes.post("/avatar", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const userId = userClaims.id;
+  const contentType = c.req.header("content-type") ?? "";
+  if (!contentType.includes("multipart/form-data")) {
+    return badRequest(c, "multipart file is required");
+  }
+  const form = await c.req.parseBody();
+  const file = form.file;
+  if (!file || typeof file === "string") {
+    return badRequest(c, "file is required");
+  }
+  const blob = file;
+  const kind = avatarFileType(blob);
+  if (!kind) {
+    return badRequest(c, "\u05D0\u05E4\u05E9\u05E8 \u05DC\u05D4\u05E2\u05DC\u05D5\u05EA \u05EA\u05DE\u05D5\u05E0\u05EA JPG, PNG, WEBP \u05D0\u05D5 HEIC");
+  }
+  const path = `${userId}/avatar-${crypto.randomUUID()}.${kind.ext}`;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const { error: upErr } = await supabase.storage.from("reels").upload(path, bytes, {
+    contentType: kind.contentType,
+    upsert: false
+  });
+  if (upErr) return badRequest(c, upErr.message);
+  const { data: pub } = supabase.storage.from("reels").getPublicUrl(path);
+  const { data, error } = await supabase.from("profiles").update({ avatar_url: pub.publicUrl }).eq("id", userId).select("*").single();
+  if (error) return badRequest(c, error.message);
+  return ok(c, data);
+});
+
+// src/routes/public-profiles.ts
+var publicProfileRoutes = new Hono2();
+publicProfileRoutes.use("*", withSupabase({ auth: "user" }));
+publicProfileRoutes.get("/:id", async (c) => {
+  const { supabase, userClaims } = getSupabaseContext(c);
+  const me = userClaims.id;
+  const id = c.req.param("id");
+  const { data: profile, error } = await supabase.from("profiles").select("*").eq("id", id).single();
+  if (error) return badRequest(c, error.message);
+  if (id === me) {
+    return ok(c, { profile, friendship_status: "self" });
+  }
+  const { data: row, error: fErr } = await supabase.from("friendships").select("requester_id, addressee_id, status").or(
+    `and(requester_id.eq.${me},addressee_id.eq.${id}),and(requester_id.eq.${id},addressee_id.eq.${me})`
+  ).maybeSingle();
+  if (fErr) return badRequest(c, fErr.message);
+  let friendship_status = "none";
+  if (row?.status === "accepted") friendship_status = "friends";
+  else if (row?.status === "declined") friendship_status = "declined";
+  else if (row?.status === "pending") {
+    friendship_status = row.requester_id === me ? "pending_out" : "pending_in";
+  }
+  return ok(c, { profile, friendship_status });
 });
 
 // src/routes/reels.ts
@@ -25913,8 +26302,12 @@ reelRoutes.get("/me/liked-ids", withSupabase({ auth: "user" }), async (c) => {
 reelRoutes.get("/:id/comments", async (c) => {
   const supabase = getAnonClient();
   const id = c.req.param("id");
-  const { data, error } = await supabase.from("reel_comments").select("*, author:profiles!reel_comments_user_id_fkey(*)").eq("reel_id", id).order("created_at", { ascending: true }).limit(100);
-  if (error) return badRequest(c, error.message);
+  const { data, error } = await supabase.from("reel_comments").select("*, author:profiles!user_id(*)").eq("reel_id", id).order("created_at", { ascending: true }).limit(100);
+  if (error) {
+    const retry = await supabase.from("reel_comments").select("*, author:profiles(*)").eq("reel_id", id).order("created_at", { ascending: true }).limit(100);
+    if (retry.error) return badRequest(c, error.message);
+    return ok(c, retry.data ?? []);
+  }
   return ok(c, data ?? []);
 });
 reelRoutes.post("/", withSupabase({ auth: "user" }), async (c) => {
@@ -25962,6 +26355,12 @@ reelRoutes.post("/", withSupabase({ auth: "user" }), async (c) => {
   if (kind === "apartment_tour" && !apartmentId) {
     return badRequest(c, "apartment_id is required for apartment_tour");
   }
+  if (kind === "apartment_tour") {
+    const { data: profile } = await supabase.from("profiles").select("user_path").eq("id", userId).single();
+    if (profile?.user_path !== "dira") {
+      return badRequest(c, "only apartment owners can upload apartment tours");
+    }
+  }
   if (apartmentId) {
     const { data: apt, error: aptErr } = await supabase.from("apartments").select("id, owner_id").eq("id", apartmentId).single();
     if (aptErr || !apt) return badRequest(c, "apartment not found");
@@ -26006,7 +26405,7 @@ reelRoutes.post("/:id/comments", withSupabase({ auth: "user" }), async (c) => {
     reel_id: reelId,
     user_id: userClaims.id,
     body: body.body.trim()
-  }).select("*, author:profiles!reel_comments_user_id_fkey(*)").single();
+  }).select("*, author:profiles!user_id(*)").single();
   if (error) return badRequest(c, error.message);
   return ok(c, data);
 });
@@ -26054,6 +26453,7 @@ function createApp() {
   app2.route("/friends", friendRoutes);
   app2.route("/reels", reelRoutes);
   app2.route("/me/profile", profileRoutes);
+  app2.route("/profiles", publicProfileRoutes);
   return app2;
 }
 var app = createApp();
